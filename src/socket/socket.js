@@ -1,87 +1,127 @@
 const jwt = require("jsonwebtoken");
+const { prisma } = require("../prisma");
 
-const JWT_SECRET = process.env.JWT_SECRET || "";
+const JWT_SECRET = process.env.JWT_SECRET;
 
+// Track online users (userId → socketId)
 const connectedUsers = new Map();
 
 function initSocket(io) {
-  // JWT validation for WebSocket
-  io.use((socket, next) => {
-    const token =
-      socket.handshake.auth.token ||
-      socket.handshake.query.token;
+    // -----------------------------
+    // AUTHENTICATION MIDDLEWARE
+    // -----------------------------
+    io.use((socket, next) => {
+        const token =
+            socket.handshake.auth.token ||
+            socket.handshake.query.token;
 
-    if (!token) return next(new Error("No token"));
+        if (!token) return next(new Error("No token provided"));
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
-      if (err || typeof decoded !== "object") {
-        return next(new Error("Invalid token"));
-      }
+        jwt.verify(token, JWT_SECRET, (err, decoded) => {
+            if (err || !decoded?.id) {
+                return next(new Error("Invalid token"));
+            }
 
-      socket.user = decoded;
-      next();
-    });
-  });
-
-  io.on("connection", (socket) => {
-    const user = socket.user;
-
-    connectedUsers.set(user.id, socket.id);
-    socket.join(`user_${user.id}`);
-
-    console.log("User connected:", user.name, socket.id);
-
-    // Call user
-    socket.on("call_user", (data) => {
-      io.to(`user_${data.userToCall}`).emit("call_incoming", {
-        from: user.id,
-        name: user.name,
-        signal: data.signalData
-      });
+            socket.user = decoded; // { id, name }
+            next();
+        });
     });
 
-    // Answer call
-    socket.on("answer_call", (data) => {
-      io.to(`user_${data.to}`).emit("call_accepted", {
-        signal: data.signal
-      });
-    });
+    // -----------------------------
+    // ON CONNECTION
+    // -----------------------------
+    io.on("connection", (socket) => {
+        const user = socket.user;
 
-    // ICE
-    socket.on("ice_candidate", (data) => {
-      io.to(`user_${data.to}`).emit("ice_candidate", {
-        candidate: data.candidate
-      });
-    });
+        console.log(`///////////////// [✔ User connected]: ${user.name} (${user.id}) -> ${socket.id}`);
 
-    // End call
-    socket.on("end_call", (data) => {
-      io.to(`user_${data.to}`).emit("call_ended");
-    });
+        connectedUsers.set(user.id, socket.id);
 
-    // Chat
-    socket.on("send_message", (data) => {
-      io.to(data.roomId).emit("receive_message", {
-        ...data,
-        senderId: user.id
-      });
+        // Personal user room
+        socket.join(`user_${user.id}`);
 
-      io.to(`user_${data.receiverId}`).emit("notification", {
-        type: "message",
-        content: data.content,
-        roomId: data.roomId
-      });
-    });
+        // ---------------------------------------------------------
+        // CALLING: CALL USER
+        // ---------------------------------------------------------
+        socket.on("call_user", async (data) => {
+            io.to(`user_${data.userToCall}`).emit("call_incoming", {
+                from: user.id,
+                name: user.name,
+                offerType: data.offerType, // "video" | "audio"
+                signal: data.signalData
+            });
+        });
 
-    socket.on("join_room", (roomId) => {
-      socket.join(roomId);
-    });
+        // ---------------------------------------------------------
+        // CALLING: ANSWER
+        // ---------------------------------------------------------
+        socket.on("answer_call", (data) => {
+            io.to(`user_${data.to}`).emit("call_accepted", {
+                signal: data.signal
+            });
+        });
 
-    socket.on("disconnect", () => {
-      connectedUsers.delete(user.id);
-      console.log("Disconnected:", user.name);
+        // ---------------------------------------------------------
+        // WebRTC ICE
+        // ---------------------------------------------------------
+        socket.on("ice_candidate", (data) => {
+            io.to(`user_${data.to}`).emit("ice_candidate", {
+                candidate: data.candidate
+            });
+        });
+
+        // ---------------------------------------------------------
+        // End call
+        // ---------------------------------------------------------
+        socket.on("end_call", (data) => {
+            io.to(`user_${data.to}`).emit("call_ended");
+        });
+
+        // ---------------------------------------------------------
+        // CHAT: JOIN ROOM
+        // ---------------------------------------------------------
+        socket.on("join_room", (roomId) => {
+            socket.join(roomId);
+        });
+
+        // ---------------------------------------------------------
+        // CHAT: SEND MESSAGE
+        // ---------------------------------------------------------
+        socket.on("send_message", async (data) => {
+            const { roomId, content, receiverId } = data;
+
+            // Save message to DB
+            await prisma.message.create({
+                data: {
+                    roomId,
+                    senderId: user.id,
+                    content: content
+                }
+            });
+
+            // Broadcast to room
+            io.to(roomId).emit("receive_message", {
+                roomId,
+                content,
+                senderId: user.id
+            });
+
+            // Notify other user
+            io.to(`user_${receiverId}`).emit("notification", {
+                type: "message",
+                roomId,
+                content
+            });
+        });
+
+        // ---------------------------------------------------------
+        // ON DISCONNECT
+        // ---------------------------------------------------------
+        socket.on("disconnect", () => {
+            connectedUsers.delete(user.id);
+            console.log(`///////////////// [✖ User disconnected]: ${user.name}`);
+        });
     });
-  });
 }
 
 module.exports = { initSocket };
