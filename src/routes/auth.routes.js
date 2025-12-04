@@ -30,7 +30,7 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = await prisma.user.findFirst({ where: { email } });
   if (!user) return res.status(404).json({ error: "User not found" });
 
   const valid = await bcrypt.compare(password, user.passwordHash);
@@ -38,13 +38,35 @@ router.post("/login", async (req, res) => {
 
   const token = jwt.sign({ id: user.id, name: user.name }, JWT_SECRET);
 
-  res.json({ token, user });
+  return res.json({ token, user });
 });
 
-// Me
-router.get("/me", authenticateToken, async (req, res) => {
+// users
+router.get("/users", authenticateToken, async (req, res) => {
+  const user = await prisma.user.findMany({
+    orderBy: { id: "desc" },
+    omit: { passwordHash: true }
+  });
+
+  res.json({ user });
+});
+
+// user
+router.get("/users/:id", authenticateToken, async (req, res) => {
   const user = await prisma.user.findUnique({
-    where: { id: req.user.id }
+    where: { id: req.params.id }
+  });
+
+  res.json({ user });
+});
+
+
+// update user
+router.put("/users", authenticateToken, async (req, res) => {
+  const user = await prisma.user.update({
+    where: { id: req.user.id },
+    data: req.body,
+    omit: { passwordHash: true }
   });
 
   res.json({ user });
