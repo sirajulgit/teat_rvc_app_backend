@@ -1,0 +1,13 @@
+{
+    "apps": [
+        {
+            "name": "free-vc-ac-chat-api-4011",
+            "script": "npm",
+            "args": "start",
+            "env": {
+                "PORT": 4011,
+                "NODE_ENV": "development"
+            }
+        }
+    ]
+}
