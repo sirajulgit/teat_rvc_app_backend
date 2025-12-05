@@ -45,7 +45,12 @@ router.post("/login", async (req, res) => {
 router.get("/users", authenticateToken, async (req, res) => {
   const user = await prisma.user.findMany({
     orderBy: { id: "desc" },
-    omit: { passwordHash: true }
+    omit: { passwordHash: true },
+    where: {
+      id: {
+        not: req.user.id
+      }
+    }
   });
 
   res.json({ user });
